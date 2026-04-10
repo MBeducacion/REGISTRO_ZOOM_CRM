@@ -117,7 +117,8 @@ with st.form("registro_publico", clear_on_submit=True):
     st.markdown("---")
     st.write("🔒 **Autorización de Tratamiento de Datos**")
     with st.expander("Leer Autorización de Tratamiento de Datos"):
-        st.write("MB EDUCACIÓN - AUTORIZACIÓN PARA EL TRATAMIENTO DE DATOS PERSONALES
+        st.markdown("""
+        MB EDUCACIÓN - AUTORIZACIÓN PARA EL TRATAMIENTO DE DATOS PERSONALES
         
         De conformidad con la legislación legal vigente y la Política de Tratamiento de Datos Personales de MB Educación, el tratamiento de los datos que se reportan en este Formulario se regirá por las siguientes condiciones:
         a) Yo, al diligenciar este Formulario, concedo autorización previa, expresa e informada a MB Educación, para el tratamiento de los datos que suministro, sabiendo que he sido informado que la finalidad de dichos datos es adquirir un producto o solicitar un servicio que ella ofrece ahora o en el futuro, de tal manera que puedan tramitar mi solicitud adecuadamente, contactarme en caso de que se requiera y adelantar todas las acciones para el logro del particular.
@@ -127,7 +128,7 @@ with st.form("registro_publico", clear_on_submit=True):
 
     acepta = st.checkbox("He leído y autorizo el tratamiento de mis datos personales *")
     acepta_promos = st.checkbox("Acepto recibir información de Cursos y promociones de MB Educación")
-    
+        """)
     boton_registro = st.form_submit_button("REGISTRARME E INGRESAR")
 
 # --- LÓGICA DE GUARDADO ---
