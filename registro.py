@@ -1,21 +1,10 @@
 import streamlit as st
-from sqlalchemy import text
-import time
-import datetime
-import os
-from sqlalchemy import create_engine
 from sqlalchemy import create_engine, text
+import time
 import pandas as pd
 from streamlit_javascript import st_javascript
 
-
-
-# --- 1. CAPTURAR EL CURSO DINÁMICAMENTE ---
-# Esto lee el slug de la URL, ej: mbeducacion.app/?curso=clase-lunes
-query_params = st.query_params
-curso_slug = query_params.get("curso", "webinar-general")
-
-# --- 2. CONFIGURACIÓN DE LA BASE DE DATOS ---
+# --- 1. CONFIGURACIÓN DE LA BASE DE DATOS ---
 try:
     creds = st.secrets["db_credentials"]
     engine = create_engine(
@@ -28,94 +17,108 @@ except Exception as e:
     conexion_db_exitosa = False
     engine = None
 
-# --- 3. CARGAR DATOS DEL EVENTO DESDE EL CRM ---
-ID_REUNION = curso_slug
-NOMBRE_EVENTO = "Cargando evento..."
-LINK_ZOOM = ""
-LINK_YOUTUBE = ""
-CUPO_MAXIMO = 100
+# --- 2. CAPTURA DEL EVENTO DINÁMICO ---
+slug_url = st.query_params.get("curso")
 
-if conexion_db_exitosa and engine:
+if not slug_url:
+    st.error("⚠️ Enlace no válido. Por favor, utiliza el link oficial de MB Educación.")
+    st.stop()
+
+# --- 3. BUSCAR INFORMACIÓN DEL EVENTO ---
+@st.cache_data(ttl=30) # Reducimos a 30 seg para mayor precisión en cupos
+def obtener_datos_evento(slug):
+    if not engine: return None
     try:
         with engine.connect() as conn:
-            # Buscamos los datos que guardó el CRM
-            result = conn.execute(
-                text("SELECT titulo_curso, link_zoom, link_youtube FROM agenda_cursos WHERE slug = :s"), 
-                {"s": curso_slug}
-            ).fetchone()
-            
-            if result:
-                NOMBRE_EVENTO = result[0]
-                LINK_ZOOM = result[1]
-                LINK_YOUTUBE = result[2] if result[2] else "https://youtube.com/@mbeducacion/live"
-            else:
-                st.error("⚠️ El enlace del curso es inválido o el evento no existe.")
-                st.stop()
-    except Exception as e:
-        st.error(f"Error al consultar la agenda: {e}")
+            query = text("SELECT * FROM agenda_cursos WHERE slug = :s AND estado = 'activo'")
+            return conn.execute(query, {"s": slug}).fetchone()
+    except:
+        return None
 
-# --- 4. VERIFICAR REGISTRO PREVIO (localStorage) ---
-registro_previo = None
+evento = obtener_datos_evento(slug_url)
+
+if not evento:
+    st.error("❌ El evento solicitado no existe o ya finalizó.")
+    st.stop()
+
+# Asignación de variables desde DB
+ID_REUNION = evento.slug
+NOMBRE_EVENTO = evento.titulo_curso
+LINK_ZOOM = evento.link_zoom
+# Si no hay link de Youtube, usamos el canal general por defecto
+LINK_YOUTUBE = evento.link_youtube if evento.link_youtube else "https://www.youtube.com/@mbeducacion/live"
+CUPO_MAXIMO = evento.capacidad_max if evento.capacidad_max else 100
+
+# --- 4. VERIFICAR REGISTRO PREVIO Y CONTEO REAL ---
 try:
     registro_previo = st_javascript(f"localStorage.getItem('mbeducacion_registro_{ID_REUNION}');")
 except:
-    pass
+    registro_previo = None
 
-# --- 5. LÓGICA DE CUPOS ---
-conteo_actual = 0
-if conexion_db_exitosa and engine:
-    try:
-        with engine.connect() as conn:
-            res_conteo = conn.execute(
-                text("SELECT COUNT(*) FROM directorio_tratamiento WHERE canal_autorizacion LIKE :filtro"), 
-                {"filtro": f"%{ID_REUNION}%"}
-            )
-            conteo_actual = res_conteo.scalar()
-    except:
-        conteo_actual = 0
+def obtener_conteo_real():
+    if conexion_db_exitosa:
+        try:
+            with engine.connect() as conn:
+                # Contamos exactamente cuántos registros tienen este SLUG en el canal de autorización
+                result = conn.execute(text("""
+                    SELECT COUNT(*) FROM directorio_tratamiento 
+                    WHERE canal_autorizacion LIKE :filtro
+                """), {"filtro": f"%{ID_REUNION}%"})
+                return result.scalar()
+        except:
+            return 0
+    return 0
 
+conteo_actual = obtener_conteo_real()
+
+# Lógica de Semáforo (Zoom o Youtube)
 if conteo_actual >= CUPO_MAXIMO:
     link_destino = LINK_YOUTUBE
-    mensaje_cupo = "⚠️ ¡Sala de Zoom llena! Podrás ver la transmisión por YouTube."
+    mensaje_cupo = "🚀 ¡Sala de Zoom llena! Accede a la transmisión oficial en YouTube Live."
+    color_alerta = "orange"
 else:
     link_destino = LINK_ZOOM
-    mensaje_cupo = "✨ Tienes un cupo reservado en la sala de Zoom."
+    mensaje_cupo = "✅ ¡Cupo disponible en Zoom! Podrás interactuar en vivo."
+    color_alerta = "green"
 
-# --- VISTA USUARIOS REGISTRADOS ---
+# --- 5. VISTA PARA USUARIOS YA REGISTRADOS ---
 if registro_previo == "true":
     st.title(NOMBRE_EVENTO)
-    st.success(f"✨ ¡Bienvenido de nuevo! Ya estás registrado.")
+    st.success("✨ ¡Hola de nuevo! Ya estás registrado para este evento.")
     st.info(mensaje_cupo)
     
     st.markdown(f"""
         <a href="{link_destino}" target="_blank" style="
             text-decoration: none; background-color: #2D8CFF; color: white;
-            padding: 15px 25px; border-radius: 10px; font-weight: bold;
+            padding: 18px 25px; border-radius: 12px; font-weight: bold;
             display: inline-block; text-align: center; width: 100%;
-        ">🚀 INGRESAR A LA SESIÓN</a>
+            font-size: 20px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);
+        ">ENTRAR A LA CLASE AHORA</a>
     """, unsafe_allow_html=True)
     
-    if st.button("No soy yo / Registrar nuevos datos"):
+    if st.button("Actualizar mis datos / No soy yo"):
         st_javascript(f"localStorage.removeItem('mbeducacion_registro_{ID_REUNION}');")
         st.rerun()
     st.stop()
 
-# --- FORMULARIO DE REGISTRO (HABEAS DATA) ---
+# --- 6. FORMULARIO DE REGISTRO ---
 st.title("Registro de Asistencia")
-st.subheader(f"Bienvenido al {NOMBRE_EVENTO}")
+st.subheader(f"Evento: {NOMBRE_EVENTO}")
 
 with st.form("registro_publico", clear_on_submit=True):
     nombre = st.text_input("Nombre Completo *")
-    col1, col2 = st.columns([1, 2])
-    with col1: tipo_doc = st.selectbox("Tipo Doc *", ["C.C.", "NIT", "C.E.", "Otro"])
-    with col2: doc_identidad = st.text_input("Número de Documento *")
-    
+    col_d1, col_d2 = st.columns([1, 2])
+    with col_d1:
+        tipo_doc = st.selectbox("Tipo Doc *", ["C.C.", "NIT", "C.E.", "Pasaporte", "T.I.", "Otro"])
+    with col_d2:
+        doc_identidad = st.text_input("Número de Documento *")
+
     institucion = st.text_input("Institución / Empresa *")
     rol_cargo = st.text_input("Cargo *")
     email = st.text_input("Correo Electrónico *")
     
     st.markdown("---")
-    st.write("🔒 **Autorización de Tratamiento de Datos**")
+    st.write("🔒 **Tratamiento de Datos Personales**")
     with st.expander("Leer Autorización de Tratamiento de Datos"):
         st.markdown("""
         ### MB EDUCACIÓN - AUTORIZACIÓN PARA EL TRATAMIENTO DE DATOS PERSONALES
@@ -126,32 +129,48 @@ with st.form("registro_publico", clear_on_submit=True):
         c) Se que los siguientes son los derechos básicos que tengo como titular de los datos que se han diligenciado en este Formulario: 1) Todos los datos registrados en este Formulario sólo serán empleados por MB Educación para cumplir la finalidad expuesta en el punto (a) del presente Aviso; 2) En cualquier momento, puedo solicitar una consulta de la información con que MB Educación cuenta sobre mí, dirigiéndome al Oficial de Protección de Datos Personales de la Entidad; 3) MB Educación velará por la confidencialidad y privacidad de los datos personales de los titulares que están siendo reportados, según las disposiciones legales vigentes; 4) En cualquier momento puedo solicitar una prueba de esta autorización.
         d) El Oficial de Protección de Datos Personales de la Entidad, ante quien puedo ejercer mis derechos, de forma gratuita, lo contactar en la siguiente dirección electrónica: usodedatos@mbeducacion.com.co")
          """)
-    acepta = st.checkbox("He leído y autorizo el tratamiento de mis datos personales *")
-    acepta_promos = st.checkbox("Acepto recibir información de Cursos y promociones de MB Educación")
-        
+
+    acepta = st.checkbox("He leído y acepto la política de Habeas Data *")
+    acepta_promos = st.checkbox("Deseo recibir información de futuros cursos y productos de MB")
+    
     boton_registro = st.form_submit_button("REGISTRARME E INGRESAR")
 
-# --- LÓGICA DE GUARDADO ---
+# --- 7. PROCESO DE REGISTRO Y REDIRECCIÓN ---
 if boton_registro:
-    if not all([nombre, doc_identidad, institucion, rol_cargo, email, acepta]):
-        st.error("⚠️ Por favor completa todos los campos obligatorios.")
+    if not nombre or not doc_identidad or not email or not acepta:
+        st.error("⚠️ Completa los campos obligatorios (*) para continuar.")
     else:
         try:
+            # Volvemos a contar justo antes de guardar para evitar errores de último segundo
+            conteo_final = obtener_conteo_real()
+            url_final = LINK_ZOOM if conteo_final < CUPO_MAXIMO else LINK_YOUTUBE
+            
             with engine.begin() as conn:
                 conn.execute(text("""
                     INSERT INTO directorio_tratamiento 
                     (contacto_nombre, tipo_documento, documento_identidad, institucion, rol_cargo, email, habeas_data, autoriza_env_info, canal_autorizacion) 
-                    VALUES (:nom, :tdoc, :doc, :inst, :rol, :mail, :hab, :env_info, :cnal)
+                    VALUES (:nom, :tdoc, :doc, :inst, :rol, :mail, 1, :env, :cnal)
                 """), {
-                    "nom": nombre, "tdoc": tipo_doc, "doc": doc_identidad, 
+                    "nom": nombre, "tdoc": tipo_doc, "doc": doc_identidad,
                     "inst": institucion, "rol": rol_cargo, "mail": email,
-                    "hab": 1, "env_info": 1 if acepta_promos else 0,
-                    "cnal": f"CRM - {ID_REUNION} - {time.strftime('%d/%m/%Y')}"
+                    "env": 1 if acepta_promos else 0,
+                    "cnal": f"Registro Zoom - {ID_REUNION} - {time.strftime('%Y-%m-%d %H:%M')}"
                 })
-            
+
+            # Guardamos persistencia en el navegador
             st_javascript(f"localStorage.setItem('mbeducacion_registro_{ID_REUNION}', 'true');")
-            st.success("✅ ¡Registro exitoso!")
-            time.sleep(2)
-            st.markdown(f'<meta http-equiv="refresh" content="0; url={link_destino}">', unsafe_allow_html=True)
+            
+            st.success("✅ ¡Registro completado con éxito!")
+            st.write("Redirigiendo a la transmisión...")
+            
+            # Redirección automática por JavaScript (más confiable)
+            js_redir = f'window.location.href = "{url_final}";'
+            st_javascript(js_redir)
+            
+            # Respaldo por si JS falla
+            st.markdown(f'<meta http-equiv="refresh" content="1; url={url_final}">', unsafe_allow_html=True)
+            
         except Exception as e:
-            st.error(f"❌ Error al guardar: {e}")
+            st.error(f"❌ Error al procesar registro: {e}")
+
+ 
