@@ -4,3 +4,4 @@ pymysql
 pandas
 cryptography
 streamlit-javascript
+plotly
